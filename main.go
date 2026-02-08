@@ -73,32 +73,26 @@ func main() {
 		opt.Alpha = lr
 
 		inputs, targets := data.BatchSample(trainData, cfg.BlockSize, cfg.BatchSize)
-		batchLoss := 0.0
 
-		for j := 0; j < cfg.BatchSize; j++ {
-			input := inputs[j]
-			target := targets[j]
+		// Forward pass
+		embeds := Rows(tokEmbeds, Flat(inputs)...) // (B*T, D)
 
-			// Forward pass
-			embeds := Rows(tokEmbeds, Flat(input)...) // (T, D)
-			// No add posEmbeds
+		// Tile RoPE frequencies for the whole batch
+		cosTiled := pkg.Tile(cos, cfg.BatchSize)
+		sinTiled := pkg.Tile(sin, cfg.BatchSize)
 
-			// Pass RoPE cos/sin to blocks
-			for _, block := range blocks {
-				embeds = block.Forward(embeds, cos, sin)
-			}
-			embeds = norm.Forward(embeds)
-			logits := lmHead.Forward(embeds)
-
-			// Loss
-			loss := SoftmaxCrossEntropy(logits, target)
-			batchLoss += Val(loss)
-
-			scaledLoss := pkg.DivC(float64(cfg.BatchSize), loss)
-			scaledLoss.Backward()
+		// Pass RoPE cos/sin to blocks
+		for _, block := range blocks {
+			embeds = block.Forward(embeds, cosTiled, sinTiled, cfg.BlockSize)
 		}
+		embeds = norm.Forward(embeds)
+		logits := lmHead.Forward(embeds)
 
-		losses += batchLoss / float64(cfg.BatchSize)
+		// Loss
+		loss := SoftmaxCrossEntropy(logits, targets)
+		loss.Backward()
+
+		losses += Val(loss)
 		fmt.Printf("\r%s", strings.Repeat("·", (i%cfg.EvalSteps)*26/cfg.EvalSteps))
 
 		if i%cfg.EvalSteps == 0 {
@@ -108,20 +102,19 @@ func main() {
 			pkg.DisableDropout() // Evaluate without dropout
 			valLoss := 0.0
 			valBatches := 10 // Evaluate on 10 batches
-			vInputs, vTargets := data.BatchSample(valData, cfg.BlockSize, valBatches)
-			for k := 0; k < valBatches; k++ {
-				vIn := vInputs[k]
-				vTgt := vTargets[k]
 
-				e := Rows(tokEmbeds, Flat(vIn)...)
-				for _, b := range blocks {
-					e = b.Forward(e, cos, sin)
-				}
-				e = norm.Forward(e)
-				l := lmHead.Forward(e)
-				valLoss += Val(SoftmaxCrossEntropy(l, vTgt))
+			vInputs, vTargets := data.BatchSample(valData, cfg.BlockSize, valBatches)
+			vCos := pkg.Tile(cos, valBatches)
+			vSin := pkg.Tile(sin, valBatches)
+
+			e := Rows(tokEmbeds, Flat(vInputs)...)
+			for _, b := range blocks {
+				e = b.Forward(e, vCos, vSin, cfg.BlockSize)
 			}
-			valLoss /= float64(valBatches)
+			e = norm.Forward(e)
+			l := lmHead.Forward(e)
+			valLoss = Val(SoftmaxCrossEntropy(l, vTargets))
+
 			variable.Config.Train = true // Re-enable dropout
 
 			fmt.Printf("\rstep: %5d, train_loss: %.4f, val_loss: %.4f, lr: %.5f\n", i, avgLoss, valLoss, lr)
@@ -166,7 +159,7 @@ func main() {
 		sinSlice := Rows(sin, indices...)
 
 		for _, block := range blocks {
-			embeds = block.Forward(embeds, cosSlice, sinSlice)
+			embeds = block.Forward(embeds, cosSlice, sinSlice, T)
 		}
 		embeds = norm.Forward(embeds)
 		logits := lmHead.Forward(embeds)

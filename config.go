@@ -27,11 +27,11 @@ type Config struct {
 func NewConfig() *Config {
 	c := &Config{}
 
-	flag.IntVar(&c.BlockSize, "block-size", 64, "Block size (context length)")
-	flag.IntVar(&c.EmbedSize, "embed-size", 192, "Embedding size")
+	flag.IntVar(&c.BlockSize, "block-size", 256, "Block size (context length)")
+	flag.IntVar(&c.EmbedSize, "embed-size", 384, "Embedding size")
 	flag.IntVar(&c.Heads, "heads", 6, "Number of attention heads")
 	flag.IntVar(&c.Layers, "layers", 6, "Number of transformer layers")
-	flag.IntVar(&c.BatchSize, "batch-size", 32, "Batch size")
+	flag.IntVar(&c.BatchSize, "batch-size", 64, "Batch size")
 	flag.Float64Var(&c.LearningRate, "lr", 1e-3, "Learning rate")
 	flag.Float64Var(&c.MinLearningRate, "min-lr", 1e-4, "Minimum learning rate")
 	flag.IntVar(&c.Steps, "steps", 10000, "Number of training steps")

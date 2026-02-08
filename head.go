@@ -38,10 +38,10 @@ func NewMultiHeadAttention(embedSize, numHeads int) *MultiHeadAttention {
 	}
 }
 
-func (mh *MultiHeadAttention) Forward(input, cos, sin *variable.Variable) *variable.Variable {
+func (mh *MultiHeadAttention) Forward(input, cos, sin *variable.Variable, seqLen int) *variable.Variable {
 	var features []*variable.Variable
 	for _, head := range mh.Heads {
-		features = append(features, head.Forward(input, cos, sin))
+		features = append(features, head.Forward(input, cos, sin, seqLen))
 	}
 
 	out := pkg.Cat(features...)
@@ -79,25 +79,36 @@ func NewHead(embedSize, headSize int) *Head {
 }
 
 // Self-attention mechanism, see main_test.go for explanation.
-func (h *Head) Forward(input, cos, sin *variable.Variable) *variable.Variable {
+func (h *Head) Forward(input, cos, sin *variable.Variable, seqLen int) *variable.Variable {
 	query := h.Query.Forward(input)
 	key := h.Key.Forward(input)
+	value := h.Value.Forward(input)
 
 	// Apply RoPE
 	query = pkg.ApplyRotaryEmb(query, cos, sin)
 	key = pkg.ApplyRotaryEmb(key, cos, sin)
 
-	attentions := MatMul(query, Transpose(key))
-	attentions = MulC(math.Pow(float64(h.headSize), -0.5), attentions)
+	batchSize := len(input.Data) / seqLen
+	qs := pkg.SplitRows(query, batchSize, seqLen)
+	ks := pkg.SplitRows(key, batchSize, seqLen)
+	vs := pkg.SplitRows(value, batchSize, seqLen)
 
-	T := len(input.Data) // number of tokens
-	tril := Tril(Ones(T, T))
-	attentions = MaskedInfFill(attentions, tril)
-	attentions = Softmax(attentions)
-	attentions = Dropout(dropout)(attentions)
+	tril := Tril(Ones(seqLen, seqLen))
+	scale := math.Pow(float64(h.headSize), -0.5)
 
-	v := h.Value.Forward(input)
-	weightedSum := MatMul(attentions, v)
+	var weightedSums []*variable.Variable
+	for i := 0; i < batchSize; i++ {
+		attentions := MatMul(qs[i], Transpose(ks[i]))
+		attentions = MulC(scale, attentions)
 
-	return weightedSum
+		attentions = MaskedInfFill(attentions, tril)
+		attentions = Softmax(attentions)
+		attentions = Dropout(dropout)(attentions)
+
+		weightedSum := MatMul(attentions, vs[i])
+		weightedSums = append(weightedSums, weightedSum)
+	}
+
+	// Combine batch items back
+	return pkg.CatV(weightedSums...)
 }

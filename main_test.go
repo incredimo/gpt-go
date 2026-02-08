@@ -345,7 +345,7 @@ func TestTransformer(t *testing.T) {
 	// }
 	embeds := Rows(tokEmbeds, Flat(input)...) // get embed for every input token
 	// embeds = Add(embeds, posEmbeds)           // add positional embedding
-	embeds = block.Forward(embeds, cos, sin)
+	embeds = block.Forward(embeds, cos, sin, blockSize)
 	embeds = norm.Forward(embeds)
 	// {
 	//   {score for tok0, ..., score for tokN}, // for input tok0

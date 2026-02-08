@@ -2,7 +2,6 @@ package data
 
 import (
 	"math"
-	"math/rand"
 	"testing"
 
 	"github.com/itsubaki/autograd/variable"
@@ -117,10 +116,14 @@ func TestSample(t *testing.T) {
 	testData := V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
 	blockSize := 3
 
-	RandInt = func(_ int) int { return 0 }
+	// We need deterministic randomness for testing
+	// Save original RandInt
+	origRandInt := RandInt
 	defer func() {
-		RandInt = rand.Intn
+		RandInt = origRandInt
 	}()
+	// Mock RandInt to return 0 always
+	RandInt = func(n int) int { return 0 }
 
 	x, y := Sample(testData, blockSize)
 	areMatricesEqual(t, M{
@@ -129,6 +132,38 @@ func TestSample(t *testing.T) {
 	areMatricesEqual(t, M{
 		{1, 2, 3},
 	}, y)
+}
+
+func TestBatchSample(t *testing.T) {
+	// Setup data
+	testData := V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	blockSize := 2
+	batchSize := 2
+
+	// We need deterministic randomness for testing
+	// Save original RandInt
+	origRandInt := RandInt
+	defer func() {
+		RandInt = origRandInt
+	}()
+	// Mock RandInt to return 0 always
+	RandInt = func(n int) int { return 0 }
+
+	// Offset 0:
+	// Batch 0: x=[0, 1], y=[1, 2]
+	// Batch 1: x=[0, 1], y=[1, 2]
+	// Flattened x: [0, 1, 0, 1]
+	// Flattened y: [1, 2, 1, 2]
+
+	inputs, targets := BatchSample(testData, blockSize, batchSize)
+
+	// Expected shape: (1, 4)
+	if len(inputs.Data) != 1 || len(inputs.Data[0]) != 4 {
+		t.Errorf("inputs shape mismatch: want (1, 4), got (%d, %d)", len(inputs.Data), len(inputs.Data[0]))
+	}
+
+	areMatricesEqual(t, M{{0, 1, 0, 1}}, inputs)
+	areMatricesEqual(t, M{{1, 2, 1, 2}}, targets)
 }
 
 func TestNormNewLinesEmptyString(t *testing.T) {

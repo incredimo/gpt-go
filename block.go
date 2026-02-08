@@ -53,11 +53,11 @@ func NewBlock(embedSize, numHeads int) *Block {
 	}
 }
 
-func (b *Block) Forward(input, cos, sin *variable.Variable) *variable.Variable {
+func (b *Block) Forward(input, cos, sin *variable.Variable, seqLen int) *variable.Variable {
 	// Self-attention with residual connections. Input is our highway, we allow the gradient to flow back unimpeded.
-	normalized := b.norm1.Forward(input)              // Normalize input
-	saOut := b.saHead.Forward(normalized, cos, sin) // Encode relationships between positions, (blockSize, embedSize)
-	input = Add(input, saOut)                         // Add residual attention output back to main path
+	normalized := b.norm1.Forward(input)                      // Normalize input
+	saOut := b.saHead.Forward(normalized, cos, sin, seqLen) // Encode relationships between positions, (blockSize, embedSize)
+	input = Add(input, saOut)                                 // Add residual attention output back to main path
 
 	// Feed-forward network with residual connection (SwiGLU)
 	normalized = b.norm2.Forward(input) // Normalize input

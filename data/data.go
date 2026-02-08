@@ -111,16 +111,25 @@ func Sample(data []float64, blockSize int) (*variable.Variable, *variable.Variab
 }
 
 // BatchSample returns a batch of random samples of data of the given block size.
-func BatchSample(data []float64, blockSize, batchSize int) ([]*variable.Variable, []*variable.Variable) {
-	var inputs, targets []*variable.Variable
+func BatchSample(data []float64, blockSize, batchSize int) (*variable.Variable, *variable.Variable) {
+	totalLen := blockSize * batchSize
+	x := make([]float64, totalLen)
+	y := make([]float64, totalLen)
 
 	for i := 0; i < batchSize; i++ {
-		x, y := Sample(data, blockSize)
-		inputs = append(inputs, x)
-		targets = append(targets, y)
+		dataLen := len(data) - (blockSize + 1)
+		if dataLen < 0 {
+			panic("not enough data for the given block size")
+		}
+		offset := RandInt(dataLen)
+
+		for j := 0; j < blockSize; j++ {
+			x[i*blockSize+j] = data[offset+j]
+			y[i*blockSize+j] = data[offset+j+1]
+		}
 	}
 
-	return inputs, targets
+	return variable.New(x...), variable.New(y...)
 }
 
 func Chars() string {

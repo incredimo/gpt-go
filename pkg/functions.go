@@ -142,6 +142,29 @@ func Flat(x *variable.Variable) []float64 {
 	return matrix.Flatten(x.Data)
 }
 
+// Tiles x n times along the first dimension (rows).
+func Tile(x *variable.Variable, n int) *variable.Variable {
+	var xs []*variable.Variable
+	for i := 0; i < n; i++ {
+		xs = append(xs, x)
+	}
+	return CatV(xs...)
+}
+
+// Splits x into batchSize chunks of seqLen rows.
+func SplitRows(x *variable.Variable, batchSize, seqLen int) []*variable.Variable {
+	var splits []*variable.Variable
+	for i := 0; i < batchSize; i++ {
+		start := i * seqLen
+		var indices []float64
+		for j := 0; j < seqLen; j++ {
+			indices = append(indices, float64(start+j))
+		}
+		splits = append(splits, Rows(x, indices...))
+	}
+	return splits
+}
+
 func Millions(num int) float64 {
 	return float64(num) / 1e6
 }

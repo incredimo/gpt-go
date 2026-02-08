@@ -325,7 +325,7 @@ func TestTransformer(t *testing.T) {
 	// Basic transformer components
 	tokEmbeds := RandEmbeds(vocabSize, embedSize)
 	// posEmbeds := RandEmbeds(blockSize, embedSize) // RoPE replaces this
-	block := NewBlock(embedSize, 1)
+	block := NewBlock(embedSize, 1, blockSize)
 	norm := NewRMSNorm(embedSize)
 	lmHead := NewLinear(embedSize, vocabSize)
 
@@ -345,7 +345,7 @@ func TestTransformer(t *testing.T) {
 	// }
 	embeds := Rows(tokEmbeds, Flat(input)...) // get embed for every input token
 	// embeds = Add(embeds, posEmbeds)           // add positional embedding
-	embeds = block.Forward(embeds, cos, sin, blockSize)
+	embeds = block.Forward(embeds, cos, sin, blockSize, false)
 	embeds = norm.Forward(embeds)
 	// {
 	//   {score for tok0, ..., score for tokN}, // for input tok0

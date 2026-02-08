@@ -210,3 +210,9 @@ func unzip(tok int64) (int, int) {
 	tok2 := int(tok & 0xFFFFFFFF)
 	return tok1, tok2
 }
+
+func SplitDataset(data []float64, ratio float64) ([]float64, []float64) {
+	n := len(data)
+	trainSize := int(float64(n) * ratio)
+	return data[:trainSize], data[trainSize:]
+}

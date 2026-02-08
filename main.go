@@ -2,141 +2,175 @@ package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
-	"math"
-
 	"github.com/itsubaki/autograd/optimizer"
+	"github.com/itsubaki/autograd/variable"
 	"github.com/zakirullin/gpt-go/data"
 	"github.com/zakirullin/gpt-go/pkg"
 )
 
-// Hyperparameters
-const (
-	blockSize        = 64
-	embedSize        = 192
-	heads            = 6
-	layers           = 6
-	batchSize        = 32
-	learningRate     = 1e-3
-	minLearningRate  = 1e-4
-	steps            = 10000 // number of training steps
-	evalSteps        = 200   // evaluate loss once per every evalSteps
-	dropout          = 0.1   // disable some % of our neurons to prevent overfitting, model is likely to generalize
-	pretrainedTokens = 6000  // number of pretrained tokens to add on top of auto-detected characters
-	maxTokens        = 100   // tokens limit for generation
-	maxGradNorm      = 1.0
-)
+var dropout float64
 
 func main() {
-	// Skip training if "-chat" flag is provided.
-	steps := steps
-	chat := flag.Bool("chat", false, "Skip training and jump straight to chat")
-	flag.Parse()
-	if *chat {
-		steps = -1
-	}
+	cfg := NewConfig()
+	dropout = cfg.Dropout
 
 	// Loading dataset and building vocabulary.
 	fmt.Println("Tokenizing dataset...")
-	dataset, vocabSize := data.Tokenize(pretrainedTokens)
-	fmt.Printf("First characters:\n%s\n", strings.TrimSpace(data.Decode(dataset[:45]...)))
-	fmt.Printf("Vocabulary: %s\n", data.Chars())
-	fmt.Printf("Tokens in dataset: %.3fM\n", pkg.Millions(len(dataset)))
+	fullDataset, vocabSize := data.Tokenize(cfg.PretrainedTokens)
+	fmt.Printf("Vocabulary size: %d\n", vocabSize)
+	fmt.Printf("Dataset size: %.3fM tokens\n", pkg.Millions(len(fullDataset)))
+
+	// Train/Val split
+	trainData, valData := data.SplitDataset(fullDataset, 0.9)
+	fmt.Printf("Train: %.3fM, Val: %.3fM\n", pkg.Millions(len(trainData)), pkg.Millions(len(valData)))
 
 	// Basic transformer components.
-	tokEmbeds := RandEmbeds(vocabSize, embedSize)
-	posEmbeds := RandEmbeds(blockSize, embedSize)
+	tokEmbeds := RandEmbeds(vocabSize, cfg.EmbedSize)
+	// RoPE replaces learned posEmbeds
+
 	var blocks []*Block
-	for range layers {
-		blocks = append(blocks, NewBlock(embedSize, heads))
+	for range cfg.Layers {
+		blocks = append(blocks, NewBlock(cfg.EmbedSize, cfg.Heads))
 	}
-	norm := NewLayerNorm(embedSize)
-	lmHead := NewLinear(embedSize, vocabSize)
+	// Use RMSNorm instead of LayerNorm
+	norm := NewRMSNorm(cfg.EmbedSize)
+	lmHead := NewLinear(cfg.EmbedSize, vocabSize, NoBias())
 
 	// Collecting all the parameters.
 	params := pkg.NewParams()
-	params.Add(tokEmbeds, posEmbeds)
+	params.Add(tokEmbeds) // No posEmbeds
 	for _, block := range blocks {
 		params.Add(block.Params()...)
 	}
 	params.Add(norm.Params()...)
 	params.Add(lmHead.Params()...)
 	params.TryLoadPretrained()
-	fmt.Printf("Model size: %.3fM\n", pkg.Millions(params.Count()))
+	fmt.Printf("Model size: %.3fM params\n", pkg.Millions(params.Count()))
+
+	// Precompute RoPE frequencies
+	// Max sequence length is cfg.BlockSize.
+	cos, sin := pkg.PrecomputeFreqsCis(cfg.EmbedSize/cfg.Heads, cfg.BlockSize)
 
 	// Training loop.
 	losses := 0.0
-	opt := pkg.NewAdamW(learningRate)
-	fmt.Printf("bs=%d, es=%d, heads=%d, layers=%d, steps=%d\n", blockSize, embedSize, heads, layers, steps)
+	opt := pkg.NewAdamW(cfg.LearningRate)
+
+	steps := cfg.Steps
+	if cfg.Chat {
+		steps = -1
+	}
+
+	fmt.Printf("Config: %+v\n", cfg)
+
 	for i := 0; i < steps; i++ {
 		// Cosine Decay Scheduler
-		lr := minLearningRate + 0.5*(learningRate-minLearningRate)*(1+math.Cos(float64(i)/float64(steps)*math.Pi))
+		lr := cfg.MinLearningRate + 0.5*(cfg.LearningRate-cfg.MinLearningRate)*(1+math.Cos(float64(i)/float64(cfg.Steps)*math.Pi))
 		opt.Alpha = lr
 
-		inputs, targets := data.BatchSample(dataset, blockSize, batchSize)
+		inputs, targets := data.BatchSample(trainData, cfg.BlockSize, cfg.BatchSize)
 		batchLoss := 0.0
 
-		for j := 0; j < batchSize; j++ {
+		for j := 0; j < cfg.BatchSize; j++ {
 			input := inputs[j]
 			target := targets[j]
 
-			// Forward pass, calculate predictions for every input token.
-			embeds := Rows(tokEmbeds, Flat(input)...) // get embed for every input token
-			embeds = Add(embeds, posEmbeds)           // add positional embedding
-			for _, block := range blocks {            // self-attention and feed-forward
-				embeds = block.Forward(embeds)
+			// Forward pass
+			embeds := Rows(tokEmbeds, Flat(input)...) // (T, D)
+			// No add posEmbeds
+
+			// Pass RoPE cos/sin to blocks
+			for _, block := range blocks {
+				embeds = block.Forward(embeds, cos, sin)
 			}
 			embeds = norm.Forward(embeds)
-			logits := lmHead.Forward(embeds) // get scores for the next token for every context-enriched embed
+			logits := lmHead.Forward(embeds)
 
-			// Loss calculation
+			// Loss
 			loss := SoftmaxCrossEntropy(logits, target)
 			batchLoss += Val(loss)
 
-			// Scale loss by 1/batchSize for gradient accumulation
-			scaledLoss := pkg.DivC(float64(batchSize), loss)
+			scaledLoss := pkg.DivC(float64(cfg.BatchSize), loss)
 			scaledLoss.Backward()
 		}
 
-		losses += batchLoss / float64(batchSize)
-		fmt.Printf("\r%s", strings.Repeat("·", (i%evalSteps)*26/evalSteps)) // progress bar
+		losses += batchLoss / float64(cfg.BatchSize)
+		fmt.Printf("\r%s", strings.Repeat("·", (i%cfg.EvalSteps)*26/cfg.EvalSteps))
 
-		if i%evalSteps == 0 {
-			avgLoss := losses / float64(min(i+1, evalSteps))
-			fmt.Printf("\rstep: %5d, loss: %.4f, lr: %.5f\n", i, avgLoss, lr)
+		if i%cfg.EvalSteps == 0 {
+			avgLoss := losses / float64(min(i+1, cfg.EvalSteps))
+
+			// Validation
+			pkg.DisableDropout() // Evaluate without dropout
+			valLoss := 0.0
+			valBatches := 10 // Evaluate on 10 batches
+			vInputs, vTargets := data.BatchSample(valData, cfg.BlockSize, valBatches)
+			for k := 0; k < valBatches; k++ {
+				vIn := vInputs[k]
+				vTgt := vTargets[k]
+
+				e := Rows(tokEmbeds, Flat(vIn)...)
+				for _, b := range blocks {
+					e = b.Forward(e, cos, sin)
+				}
+				e = norm.Forward(e)
+				l := lmHead.Forward(e)
+				valLoss += Val(SoftmaxCrossEntropy(l, vTgt))
+			}
+			valLoss /= float64(valBatches)
+			variable.Config.Train = true // Re-enable dropout
+
+			fmt.Printf("\rstep: %5d, train_loss: %.4f, val_loss: %.4f, lr: %.5f\n", i, avgLoss, valLoss, lr)
 			losses = 0
+
+			// Save checkpoint every 5000 steps
+			if i > 0 && i%5000 == 0 {
+				params.Save()
+			}
 		}
 
-		// Gradient Clipping
 		paramList := optimizer.Params(params, nil)
-		pkg.ClipGradNorm(paramList, maxGradNorm)
+		pkg.ClipGradNorm(paramList, cfg.MaxGradNorm)
 
-		// Nudge the parameters
 		opt.Update(params)
 		params.ZeroGrad()
 	}
-	params.Save()
+	if !cfg.Chat {
+		params.Save()
+	}
 	pkg.DisableDropout()
-	// Training is done.
+	fmt.Println("\nTraining completed.")
 
 	// Predicts the next token based on the context of tokens.
 	nextTok := func(context []float64) float64 {
-		context = context[max(0, len(context)-blockSize):]
+		// Slice context to max context window
+		if len(context) > cfg.BlockSize {
+			context = context[len(context)-cfg.BlockSize:]
+		}
 
-		// Feed context tokens to the model.
 		embeds := Rows(tokEmbeds, context...)
-		embeds = Add(embeds, posEmbeds)
+
+		// RoPE slicing
+		T := len(context)
+		indices := make([]float64, T)
+		for i := 0; i < T; i++ {
+			indices[i] = float64(i)
+		}
+		// Assuming cos, sin are large enough. If T < BlockSize (cached size), we can slice.
+		// If T > BlockSize, we have a problem. But we capped context to BlockSize above.
+		cosSlice := Rows(cos, indices...)
+		sinSlice := Rows(sin, indices...)
+
 		for _, block := range blocks {
-			embeds = block.Forward(embeds)
+			embeds = block.Forward(embeds, cosSlice, sinSlice)
 		}
 		embeds = norm.Forward(embeds)
-		logits := lmHead.Forward(embeds) // get a list of final logits for the next token
+		logits := lmHead.Forward(embeds)
 
-		// We only care about the probabilities of the next token for the last token.
 		logitsForNextToken := Rows(logits, -1)
 		probs := Softmax(logitsForNextToken)
 		tok := pkg.SampleTemp(probs, 0.8)
@@ -146,22 +180,29 @@ func main() {
 
 	// Sample from the model.
 	prompt := " mysterious island"
+	fmt.Println("Enter prompt (or 'exit'):")
 	for {
 		fmt.Printf("\n%s", prompt)
 		context := data.Encode(prompt)
-		for i := 0; i < maxTokens; i++ {
+		for i := 0; i < cfg.MaxTokens; i++ {
 			nextToken := nextTok(context)
-			fmt.Print(data.Decode(nextToken))
+			decoded := data.Decode(nextToken)
+			fmt.Print(decoded)
 			context = append(context, nextToken)
 		}
 
 		fmt.Print("\n$ ")
 		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
+		if !scanner.Scan() {
+			break
+		}
 		prompt = scanner.Text()
 		if prompt == "exit" {
 			fmt.Println("Bye!")
 			break
+		}
+		if len(strings.TrimSpace(prompt)) == 0 {
+			continue
 		}
 	}
 }

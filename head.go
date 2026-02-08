@@ -34,14 +34,14 @@ func NewMultiHeadAttention(embedSize, numHeads int) *MultiHeadAttention {
 		numHeads:  numHeads,
 		embedSize: embedSize,
 		headSize:  headSize,
-		proj:      NewLinear(embedSize, embedSize),
+		proj:      NewLinear(embedSize, embedSize, NoBias()),
 	}
 }
 
-func (mh *MultiHeadAttention) Forward(input *variable.Variable) *variable.Variable {
+func (mh *MultiHeadAttention) Forward(input, cos, sin *variable.Variable) *variable.Variable {
 	var features []*variable.Variable
 	for _, head := range mh.Heads {
-		features = append(features, head.Forward(input))
+		features = append(features, head.Forward(input, cos, sin))
 	}
 
 	out := pkg.Cat(features...)
@@ -56,7 +56,8 @@ func (mh *MultiHeadAttention) Params() []layer.Parameter {
 	for _, head := range mh.Heads {
 		params = append(params, head.Query.Weight, head.Key.Weight, head.Value.Weight)
 	}
-	params = append(params, mh.proj.Weight, mh.proj.Bias)
+	// proj has no bias
+	params = append(params, mh.proj.Weight)
 
 	return params
 }
@@ -78,9 +79,14 @@ func NewHead(embedSize, headSize int) *Head {
 }
 
 // Self-attention mechanism, see main_test.go for explanation.
-func (h *Head) Forward(input *variable.Variable) *variable.Variable {
+func (h *Head) Forward(input, cos, sin *variable.Variable) *variable.Variable {
 	query := h.Query.Forward(input)
 	key := h.Key.Forward(input)
+
+	// Apply RoPE
+	query = pkg.ApplyRotaryEmb(query, cos, sin)
+	key = pkg.ApplyRotaryEmb(key, cos, sin)
+
 	attentions := MatMul(query, Transpose(key))
 	attentions = MulC(math.Pow(float64(h.headSize), -0.5), attentions)
 

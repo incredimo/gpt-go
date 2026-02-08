@@ -7,22 +7,28 @@ import (
 	"os"
 	"strings"
 
+	"math"
+
+	"github.com/itsubaki/autograd/optimizer"
 	"github.com/zakirullin/gpt-go/data"
 	"github.com/zakirullin/gpt-go/pkg"
 )
 
 // Hyperparameters
 const (
-	blockSize        = 32
-	embedSize        = 88
-	heads            = 4
-	layers           = 4
-	learningRate     = 0.0001
-	steps            = 80000 // number of training steps, increase for better results
-	evalSteps        = 1000  // evaluate loss once per every evalSteps
-	dropout          = 0.0   // disable some % of our neurons to prevent overfitting, model is likely to generalize
+	blockSize        = 64
+	embedSize        = 192
+	heads            = 6
+	layers           = 6
+	batchSize        = 32
+	learningRate     = 1e-3
+	minLearningRate  = 1e-4
+	steps            = 10000 // number of training steps
+	evalSteps        = 200   // evaluate loss once per every evalSteps
+	dropout          = 0.1   // disable some % of our neurons to prevent overfitting, model is likely to generalize
 	pretrainedTokens = 6000  // number of pretrained tokens to add on top of auto-detected characters
-	maxTokens        = 50    // tokens limit for generation
+	maxTokens        = 100   // tokens limit for generation
+	maxGradNorm      = 1.0
 )
 
 func main() {
@@ -64,37 +70,53 @@ func main() {
 
 	// Training loop.
 	losses := 0.0
-	optimizer := pkg.NewAdamW(learningRate)
-	fmt.Printf("bs=%d, es=%d, lr=%.4f, vs=%d, steps=%d\n", blockSize, embedSize, learningRate, vocabSize, steps)
+	opt := pkg.NewAdamW(learningRate)
+	fmt.Printf("bs=%d, es=%d, heads=%d, layers=%d, steps=%d\n", blockSize, embedSize, heads, layers, steps)
 	for i := 0; i < steps; i++ {
-		// Targets contain the ground truth next token for each input token.
-		input, targets := data.Sample(dataset, blockSize)
+		// Cosine Decay Scheduler
+		lr := minLearningRate + 0.5*(learningRate-minLearningRate)*(1+math.Cos(float64(i)/float64(steps)*math.Pi))
+		opt.Alpha = lr
 
-		// Forward pass, calculate predictions for every input token.
-		embeds := Rows(tokEmbeds, Flat(input)...) // get embed for every input token
-		embeds = Add(embeds, posEmbeds)           // add positional embedding
-		for _, block := range blocks {            // self-attention and feed-forward
-			embeds = block.Forward(embeds)
+		inputs, targets := data.BatchSample(dataset, blockSize, batchSize)
+		batchLoss := 0.0
+
+		for j := 0; j < batchSize; j++ {
+			input := inputs[j]
+			target := targets[j]
+
+			// Forward pass, calculate predictions for every input token.
+			embeds := Rows(tokEmbeds, Flat(input)...) // get embed for every input token
+			embeds = Add(embeds, posEmbeds)           // add positional embedding
+			for _, block := range blocks {            // self-attention and feed-forward
+				embeds = block.Forward(embeds)
+			}
+			embeds = norm.Forward(embeds)
+			logits := lmHead.Forward(embeds) // get scores for the next token for every context-enriched embed
+
+			// Loss calculation
+			loss := SoftmaxCrossEntropy(logits, target)
+			batchLoss += Val(loss)
+
+			// Scale loss by 1/batchSize for gradient accumulation
+			scaledLoss := pkg.DivC(float64(batchSize), loss)
+			scaledLoss.Backward()
 		}
-		embeds = norm.Forward(embeds)
-		logits := lmHead.Forward(embeds) // get scores for the next token for every context-enriched embed
 
-		// Loss calculation, "how much our predicted targets differ from the ground truth targets?"
-		// We average the loss over evalSteps iterations to smooth out fluctuations.
-		loss := SoftmaxCrossEntropy(logits, targets)
-		losses += Val(loss)
+		losses += batchLoss / float64(batchSize)
 		fmt.Printf("\r%s", strings.Repeat("·", (i%evalSteps)*26/evalSteps)) // progress bar
+
 		if i%evalSteps == 0 {
 			avgLoss := losses / float64(min(i+1, evalSteps))
-			fmt.Printf("\rstep: %5d, loss: %.4f\n", i, avgLoss)
+			fmt.Printf("\rstep: %5d, loss: %.4f, lr: %.5f\n", i, avgLoss, lr)
 			losses = 0
 		}
 
-		// Backward pass, calculate the gradients (how much each parameter contributes to the loss)
-		// for all the parameters (weights, biases, embeds). Loss is the tail of a computation graph.
-		loss.Backward()
-		// Nudge the parameters in the direction of the gradients, so to minimize the loss.
-		optimizer.Update(params)
+		// Gradient Clipping
+		paramList := optimizer.Params(params, nil)
+		pkg.ClipGradNorm(paramList, maxGradNorm)
+
+		// Nudge the parameters
+		opt.Update(params)
 		params.ZeroGrad()
 	}
 	params.Save()

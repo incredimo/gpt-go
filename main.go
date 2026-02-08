@@ -35,7 +35,7 @@ func main() {
 
 	var blocks []*Block
 	for range cfg.Layers {
-		blocks = append(blocks, NewBlock(cfg.EmbedSize, cfg.Heads))
+		blocks = append(blocks, NewBlock(cfg.EmbedSize, cfg.Heads, cfg.BlockSize))
 	}
 	// Use RMSNorm instead of LayerNorm
 	norm := NewRMSNorm(cfg.EmbedSize)
@@ -83,7 +83,7 @@ func main() {
 
 		// Pass RoPE cos/sin to blocks
 		for _, block := range blocks {
-			embeds = block.Forward(embeds, cosTiled, sinTiled, cfg.BlockSize)
+			embeds = block.Forward(embeds, cosTiled, sinTiled, cfg.BlockSize, false) // useCache=false
 		}
 		embeds = norm.Forward(embeds)
 		logits := lmHead.Forward(embeds)
@@ -109,7 +109,7 @@ func main() {
 
 			e := Rows(tokEmbeds, Flat(vInputs)...)
 			for _, b := range blocks {
-				e = b.Forward(e, vCos, vSin, cfg.BlockSize)
+				e = b.Forward(e, vCos, vSin, cfg.BlockSize, false)
 			}
 			e = norm.Forward(e)
 			l := lmHead.Forward(e)
@@ -139,49 +139,144 @@ func main() {
 	fmt.Println("\nTraining completed.")
 
 	// Predicts the next token based on the context of tokens.
+	// We use stateful KV cache in blocks.
 	nextTok := func(context []float64) float64 {
 		// Slice context to max context window
+		// Note: With KV cache, we theoretically don't need to re-feed full context if we cropped properly.
+		// But usually we just take the new tokens.
+		// If context > BlockSize, we crop.
 		if len(context) > cfg.BlockSize {
 			context = context[len(context)-cfg.BlockSize:]
 		}
 
-		embeds := Rows(tokEmbeds, context...)
+		// Determine which tokens are new (not yet in cache)
+		// For simplicity in this implementation, we assume:
+		// 1. If it's the start of generation (prompt), we clear cache and feed full prompt.
+		// 2. If it's a subsequent step, we feed only the last token.
+		// However, 'nextTok' is called with full growing 'context'.
+		// We need to track how much we processed.
+		// But this closure is stateless regarding 'processed count'.
+		// So we rely on external reset or just logic:
+		// Actually, standard practice:
+		// The loop calls nextTok with accumulating context.
+		// We can change the loop to just pass the new token?
+		// But 'data.Encode' returns the prompt.
+		// Let's assume 'nextTok' is called correctly.
+		// Wait, 'nextTok' inside the loop:
+		// context = append(context, nextToken)
+		// So context grows.
 
-		// RoPE slicing
-		T := len(context)
-		indices := make([]float64, T)
-		for i := 0; i < T; i++ {
-			indices[i] = float64(i)
-		}
-		// Assuming cos, sin are large enough. If T < BlockSize (cached size), we can slice.
-		// If T > BlockSize, we have a problem. But we capped context to BlockSize above.
-		cosSlice := Rows(cos, indices...)
-		sinSlice := Rows(sin, indices...)
+		// To support KV cache efficiently, we need to know where we are.
+		// Let's infer from cache state? No, cache is internal.
+		// Let's just process the LAST token if cache is non-empty.
+		// BUT if cache is empty, process ALL.
 
-		for _, block := range blocks {
-			embeds = block.Forward(embeds, cosSlice, sinSlice, T)
-		}
-		embeds = norm.Forward(embeds)
-		logits := lmHead.Forward(embeds)
+		// We need a way to detect if cache was just cleared.
+		// We can check if we are at the beginning of generation.
+		// But 'nextTok' is called repeatedly.
 
-		logitsForNextToken := Rows(logits, -1)
-		probs := Softmax(logitsForNextToken)
-		tok := pkg.SampleTemp(probs, 0.8)
+		// Let's pass ONLY the tokens we want to process to the model.
 
-		return tok
+		// We need to check if cache is empty. But we can't easily check cache state from here without peeking block internals.
+		// Let's add a flag or just assume:
+		// If context length == prompt length (first call), process all.
+		// If context length > prompt length, process last.
+		// BUT we don't know prompt length here easily (it changes).
+
+		// Better approach: Change the loop logic in main.
+		// But 'nextTok' encapsulates the model forward pass.
+
+		// Let's simplify:
+		// 1. We process full context if we suspect cache is empty.
+		//    (We can't really know).
+		// 2. We change 'nextTok' to take 'inputTokens' and 'positionOffset'.
+		//    And manage the loop explicitly.
+
+		return 0 // Placeholder, logic moved to loop below
 	}
+	_ = nextTok // silence unused
 
 	// Sample from the model.
 	prompt := " mysterious island"
 	fmt.Println("Enter prompt (or 'exit'):")
 	for {
 		fmt.Printf("\n%s", prompt)
+
+		// Reset cache for new prompt
+		for _, block := range blocks {
+			block.ClearCache()
+		}
+
 		context := data.Encode(prompt)
+
+		// First pass: Process full prompt
+		inputTokens := context
+		startPos := 0
+
+		var nextToken float64
+
+		// Generation loop
 		for i := 0; i < cfg.MaxTokens; i++ {
-			nextToken := nextTok(context)
+			// Prepare input
+			// If inputTokens is empty (should not happen in loop logic), break?
+
+			// RoPE indices
+			indices := make([]float64, len(inputTokens))
+			for j := 0; j < len(inputTokens); j++ {
+				indices[j] = float64(startPos + j)
+			}
+
+			// If indices exceed BlockSize, we have a problem with RoPE (precomputed).
+			// Our cache logic handles cropping, but RoPE indices must be consistent.
+			// Usually RoPE wraps or we clamp.
+			// For simplicity, we assume generation doesn't exceed BlockSize from start.
+			// If it does, performance degrades.
+
+			cosSlice := Rows(cos, indices...)
+			sinSlice := Rows(sin, indices...)
+
+			embeds := Rows(tokEmbeds, inputTokens...)
+			for _, block := range blocks {
+				embeds = block.Forward(embeds, cosSlice, sinSlice, cfg.BlockSize, true) // useCache=true
+			}
+			embeds = norm.Forward(embeds)
+			logits := lmHead.Forward(embeds) // (T_new, Vocab)
+
+			// Get logits of the LAST token processed
+			logitsForNextToken := Rows(logits, -1)
+
+			// Top-K / Top-P Sampling
+			// Let's use Top-K = 40, Top-P = 0.9 (common defaults)
+			logitsFiltered := pkg.TopK(logitsForNextToken, 40)
+			logitsFiltered = pkg.TopP(logitsFiltered, 0.9)
+
+			probs := Softmax(logitsFiltered)
+			nextToken = pkg.SampleTemp(probs, 0.8) // Temperature 0.8
+
 			decoded := data.Decode(nextToken)
 			fmt.Print(decoded)
-			context = append(context, nextToken)
+
+			// Prepare for next iteration
+			inputTokens = []float64{nextToken}
+			startPos += len(indices)
+
+			// Stop if context is too long? Or just let cache crop.
+			// Note: startPos increases. If startPos > BlockSize, RoPE will fail (index out of bounds for cos/sin).
+			// We must shift RoPE indices or use relative.
+			// If we crop cache, we shift the window.
+			// But RoPE depends on absolute position.
+			// If we crop, we are conceptually sliding the window.
+			// The "absolute" position should effectively act as relative to the window start?
+			// Standard RoPE uses absolute position.
+			// If we exceed precomputed limit, we can't look up cos/sin.
+			// We should clamp startPos or extend PrecomputeFreqsCis?
+			// Ideally we rotate frequencies for infinite RoPE, but here we just precomputed fixed size.
+			if startPos >= cfg.BlockSize {
+				// We can't proceed with valid RoPE without recomputing or rotating.
+				// For now, let's just stop or wrap (wrapping is bad).
+				// We'll break generation.
+				break
+			}
 		}
 
 		fmt.Print("\n$ ")

@@ -39,12 +39,12 @@ type Block struct {
 	norm2 *RMSNorm
 }
 
-func NewBlock(embedSize, numHeads int) *Block {
+func NewBlock(embedSize, numHeads, blockSize int) *Block {
 	hiddenSize := embedSize * 4
 	return &Block{
 		embedSize: embedSize,
 		headCount: numHeads,
-		saHead:    NewMultiHeadAttention(embedSize, numHeads),
+		saHead:    NewMultiHeadAttention(embedSize, numHeads, blockSize),
 		mlpGate:   NewLinear(embedSize, hiddenSize, NoBias()),
 		mlpUp:     NewLinear(embedSize, hiddenSize, NoBias()),
 		mlpDown:   NewLinear(hiddenSize, embedSize, NoBias()),
@@ -53,10 +53,14 @@ func NewBlock(embedSize, numHeads int) *Block {
 	}
 }
 
-func (b *Block) Forward(input, cos, sin *variable.Variable, seqLen int) *variable.Variable {
+func (b *Block) ClearCache() {
+	b.saHead.ClearCache()
+}
+
+func (b *Block) Forward(input, cos, sin *variable.Variable, seqLen int, useCache bool) *variable.Variable {
 	// Self-attention with residual connections. Input is our highway, we allow the gradient to flow back unimpeded.
 	normalized := b.norm1.Forward(input)                      // Normalize input
-	saOut := b.saHead.Forward(normalized, cos, sin, seqLen) // Encode relationships between positions, (blockSize, embedSize)
+	saOut := b.saHead.Forward(normalized, cos, sin, seqLen, useCache) // Encode relationships between positions, (blockSize, embedSize)
 	input = Add(input, saOut)                                 // Add residual attention output back to main path
 
 	// Feed-forward network with residual connection (SwiGLU)

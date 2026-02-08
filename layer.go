@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/itsubaki/autograd/function"
 	"github.com/itsubaki/autograd/layer"
 	"github.com/itsubaki/autograd/variable"
 
@@ -14,6 +15,7 @@ var (
 	Mul         = variable.Mul
 	Pow         = variable.Pow
 	RandWeights = pkg.Normal
+	Sigmoid     = function.Sigmoid
 )
 
 type Linear struct {
@@ -102,4 +104,33 @@ func (ln *LayerNorm) Params() []layer.Parameter {
 		ln.Scale,
 		ln.Shift,
 	}
+}
+
+type RMSNorm struct {
+	Scale *variable.Variable
+	eps   float64
+}
+
+func NewRMSNorm(dim int) *RMSNorm {
+	return &RMSNorm{
+		Scale: Ones(1, dim),
+		eps:   1e-6,
+	}
+}
+
+func (rms *RMSNorm) Forward(x *variable.Variable) *variable.Variable {
+	pow2 := Pow(2.0)(x)
+	mean := Mean(pow2)
+	meanEps := Add(mean, variable.New(rms.eps))
+	denom := Pow(0.5)(meanEps)
+	xNorm := Div(x, denom)
+	return Mul(xNorm, rms.Scale)
+}
+
+func (rms *RMSNorm) Params() []layer.Parameter {
+	return []layer.Parameter{rms.Scale}
+}
+
+func Swish(x *variable.Variable) *variable.Variable {
+	return Mul(x, Sigmoid(x))
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/itsubaki/autograd/variable"
 
 	"github.com/zakirullin/gpt-go/data"
+	"github.com/zakirullin/gpt-go/pkg"
 )
 
 func TestNeuron(t *testing.T) {
@@ -323,10 +324,13 @@ func TestTransformer(t *testing.T) {
 
 	// Basic transformer components
 	tokEmbeds := RandEmbeds(vocabSize, embedSize)
-	posEmbeds := RandEmbeds(blockSize, embedSize)
+	// posEmbeds := RandEmbeds(blockSize, embedSize) // RoPE replaces this
 	block := NewBlock(embedSize, 1)
-	norm := NewLayerNorm(embedSize)
+	norm := NewRMSNorm(embedSize)
 	lmHead := NewLinear(embedSize, vocabSize)
+
+	// Precompute RoPE
+	cos, sin := pkg.PrecomputeFreqsCis(embedSize, blockSize)
 
 	// Input contains blockSize consecutive tokens.
 	// Targets contain the expected next token for each input token.
@@ -340,8 +344,8 @@ func TestTransformer(t *testing.T) {
 	//   ... other embeds
 	// }
 	embeds := Rows(tokEmbeds, Flat(input)...) // get embed for every input token
-	embeds = Add(embeds, posEmbeds)           // add positional embedding
-	embeds = block.Forward(embeds)
+	// embeds = Add(embeds, posEmbeds)           // add positional embedding
+	embeds = block.Forward(embeds, cos, sin)
 	embeds = norm.Forward(embeds)
 	// {
 	//   {score for tok0, ..., score for tokN}, // for input tok0
@@ -353,6 +357,7 @@ func TestTransformer(t *testing.T) {
 	// Loss calculation, how much our predicted targets differ from the actual targets?
 	loss := SoftmaxCrossEntropy(logits, targets)
 
+	// Expected value changes due to architecture changes
 	areEqual(t, 2.302585092994046, loss)
 }
 

@@ -82,6 +82,7 @@ func (h *Head) Forward(input *variable.Variable) *variable.Variable {
 	query := h.Query.Forward(input)
 	key := h.Key.Forward(input)
 	attentions := MatMul(query, Transpose(key))
+	attentions = MulC(math.Pow(float64(h.headSize), -0.5), attentions)
 
 	T := len(input.Data) // number of tokens
 	tril := Tril(Ones(T, T))
@@ -91,7 +92,6 @@ func (h *Head) Forward(input *variable.Variable) *variable.Variable {
 
 	v := h.Value.Forward(input)
 	weightedSum := MatMul(attentions, v)
-	normalizedSum := MulC(math.Pow(float64(h.embedSize), -0.5), weightedSum)
 
-	return normalizedSum
+	return weightedSum
 }

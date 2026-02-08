@@ -291,10 +291,10 @@ func TestWeightedSelfAttention(t *testing.T) {
 	attentionScores = MaskedInfFill(attentionScores, tril)
 	no := math.Inf(-1)
 	areMatricesEqual(t, M{
-		{80, no, no, no},
-		{640, 160, no, no},
-		{80, 20, 80, no},
-		{720, 180, 720, 180}, // token " and" is interested in "cat" and "dog", not so much in the others
+		{40, no, no, no},
+		{320, 80, no, no},
+		{40, 10, 40, no},
+		{360, 90, 360, 90}, // token " and" is interested in "cat" and "dog", not so much in the others
 	}, attentionScores)
 
 	attentionScores = Softmax(attentionScores) // fancy trick to turn {1, 1, no, no} to {0.5, 0.5, 0, 0}

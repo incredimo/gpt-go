@@ -50,13 +50,13 @@ func NewBlock(embedSize, numHeads int) *Block {
 
 func (b *Block) Forward(input *variable.Variable) *variable.Variable {
 	// Self-attention with residual connections. Input is our highway, we allow the gradient to flow back unimpeded.
-	input = b.norm1.Forward(input)   // Normalize input (mean=0, var=1), i.e. normalize every token's embed
-	saOut := b.saHead.Forward(input) // Encode relationships between positions, (blockSize, embedSize)
-	input = Add(input, saOut)        // Add residual attention output back to main path
+	normalized := b.norm1.Forward(input)     // Normalize input (mean=0, var=1), i.e. normalize every token's embed
+	saOut := b.saHead.Forward(normalized)    // Encode relationships between positions, (blockSize, embedSize)
+	input = Add(input, saOut)                // Add residual attention output back to main path
 
 	// Feed-forward network with residual connection
-	input = b.norm2.Forward(input)               // Normalize input
-	mlpExpanded := b.mlp.Forward(input)          // Expand to higher dimension
+	normalized = b.norm2.Forward(input)          // Normalize input
+	mlpExpanded := b.mlp.Forward(normalized)     // Expand to higher dimension
 	mlpActivated := ReLU(mlpExpanded)            // Apply activation function
 	mlpOutput := b.mlpProj.Forward(mlpActivated) // Project back to original dimension
 	mlpOutput = Dropout(dropout)(mlpOutput)      // Dropping out some neurons to prevent overfitting

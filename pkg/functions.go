@@ -109,7 +109,7 @@ func MaskedInfFill(m, mask *variable.Variable) *variable.Variable {
 			return math.Inf(-1)
 		}
 
-		return a
+		return 0
 	})
 	mMasked := Add(variable.Mul(m, mask), variable.NewOf(negInfMaskedData...))
 
@@ -148,4 +148,37 @@ func Millions(num int) float64 {
 
 func DisableDropout() {
 	variable.Config.Train = false // disables dropout
+}
+
+// ClipGradNorm scales the gradients of the model parameters to have a norm of at most maxNorm.
+func ClipGradNorm(params []*variable.Variable, maxNorm float64) {
+	totalNorm := 0.0
+	for _, p := range params {
+		if p.Grad == nil {
+			continue
+		}
+		paramNorm := 0.0
+		for i := range p.Grad.Data {
+			for j := range p.Grad.Data[i] {
+				g := p.Grad.Data[i][j]
+				paramNorm += g * g
+			}
+		}
+		totalNorm += paramNorm
+	}
+	totalNorm = math.Sqrt(totalNorm)
+
+	if totalNorm > maxNorm {
+		clipCoef := maxNorm / (totalNorm + 1e-6)
+		for _, p := range params {
+			if p.Grad == nil {
+				continue
+			}
+			for i := range p.Grad.Data {
+				for j := range p.Grad.Data[i] {
+					p.Grad.Data[i][j] *= clipCoef
+				}
+			}
+		}
+	}
 }

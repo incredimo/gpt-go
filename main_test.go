@@ -324,9 +324,11 @@ func TestTransformer(t *testing.T) {
 	// Basic transformer components
 	tokEmbeds := RandEmbeds(vocabSize, embedSize)
 	posEmbeds := RandEmbeds(blockSize, embedSize)
-	block := NewBlock(embedSize, 1)
+	block := NewBlock(embedSize, 1, 0)
 	norm := NewLayerNorm(embedSize)
-	lmHead := NewLinear(embedSize, vocabSize)
+
+	// Weight-tied output: reuse tokEmbeds as final projection weights.
+	lmHeadBias := Zeros(1, vocabSize)
 
 	// Input contains blockSize consecutive tokens.
 	// Targets contain the expected next token for each input token.
@@ -343,12 +345,10 @@ func TestTransformer(t *testing.T) {
 	embeds = Add(embeds, posEmbeds)           // add positional embedding
 	embeds = block.Forward(embeds)
 	embeds = norm.Forward(embeds)
-	// {
-	//   {score for tok0, ..., score for tokN}, // for input tok0
-	//   {score for tok0, ..., score for tokN}, // for input tok1
-	//   ... other logits
-	// }
-	logits := lmHead.Forward(embeds) // converts contextual embeddings to next-token predictions
+
+	// Weight-tied output projection: embeds @ tokEmbeds.T + bias
+	logits := MatMul(embeds, Transpose(tokEmbeds))
+	logits = Add(logits, lmHeadBias)
 
 	// Loss calculation, how much our predicted targets differ from the actual targets?
 	loss := SoftmaxCrossEntropy(logits, targets)

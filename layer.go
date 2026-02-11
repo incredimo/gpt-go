@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/itsubaki/autograd/layer"
+	"github.com/itsubaki/autograd/matrix"
 	"github.com/itsubaki/autograd/variable"
 
 	"github.com/zakirullin/gpt-go/pkg"
@@ -67,8 +68,16 @@ type LinearOption func(*Linear)
 func NoBias() LinearOption {
 	return func(l *Linear) {
 		l.Biased = false
-		// Set bias tensors to nil or zero-sized tensors
 		l.Bias = nil
+	}
+}
+
+// WithScale scales the initialized weights by a factor. Used for residual
+// projection initialization scaling (1/sqrt(2*layers)) per GPT-2 to prevent
+// signal variance from growing uncontrollably in deep networks.
+func WithScale(s float64) LinearOption {
+	return func(l *Linear) {
+		l.Weight.Data = matrix.MulC(s, l.Weight.Data)
 	}
 }
 

@@ -1,0 +1,124 @@
+{
+  "excluded_patterns": [
+    "**/.git/**",
+    "**/.svn/**",
+    "**/.hg/**",
+    "**/node_modules/**",
+    "**/target/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/vendor/**",
+    "**/.venv/**",
+    "**/venv/**",
+    "**/*.min.*",
+    "**/*.bundle.*",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.ico",
+    "**/*.svg",
+    "**/*.woff",
+    "**/*.woff2",
+    "**/*.ttf",
+    "**/*.eot",
+    "**/*.pdf",
+    "**/*.zip",
+    "**/*.gz",
+    "**/*.exe",
+    "**/*.dll",
+    "**/*.so",
+    "**/*.dylib",
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/Cargo.lock",
+    "**/*.bin",
+    "**/*.obj",
+    "**/*.lib",
+    "**/*.a",
+    "**/*.pdb",
+    "**/*.ilk",
+    "**/*.suo",
+    "**/*.user",
+    "**/*.tmp",
+    "**/*.temp",
+    "**/*.log",
+    "**/*.cache",
+    "**/*.DS_Store",
+    "**/Thumbs.db",
+    "**/*.swp",
+    "**/*.swo"
+  ],
+  "selected_files": [
+    ".\\pkg\\params.go",
+    ".\\block.go",
+    ".\\pkg\\functions.go",
+    ".\\pkg\\variance.go",
+    ".\\pkg\\variance_test.go",
+    ".\\pkg\\adamw.go",
+    ".\\layer.go",
+    ".\\pkg\\cat.go",
+    ".\\README.md",
+    ".\\head.go",
+    ".\\pkg\\matmul.go",
+    ".\\go.mod",
+    ".\\pkg\\matmul_test.go",
+    ".\\pkg\\mean_test.go",
+    ".\\pkg\\softmax_test.go",
+    ".\\pkg\\cat_test.go",
+    ".\\main.go",
+    ".\\pkg\\mean.go"
+  ],
+  "last_limit": null,
+  "max_file_size": 10000000,
+  "prompts": [
+    {
+      "name": "📋 Response Format",
+      "description": "How AI should format file outputs (combine with other prompts).",
+      "content": "For each modified file:\n\n* Add a subheading with the relative path, e.g., `## ./src/main.rs`\n  * These will not be accepted: `## Update C:\\repo\\wrapr\\src\\main.rs`, `/src/main.rs`, `## src/main.rs`, or `## 1. src/main.rs`\n* On the next line, briefly describe the changes\n* Then include the complete, unabridged contents of the file in a single code block, with no omissions, placeholders, or incomplete sections.\n\n*VERY IMPORTANT*:\nDon't put placeholders, ellipses, or incomplete code in the final output. PROVIDE THE FULL, COMPLETE CONTENTS OF EACH FILE THAT NEEDS TO BE CHANGED.\n\nEnsure the code is properly formatted and ready to use. Repeat this for every changed file.\n\nIf any file or folder should be removed, add a subheading with its path, e.g., `## [DELETE] ./src/old_file.rs`, followed by a brief reason for its deletion.",
+      "enabled": true
+    },
+    {
+      "name": "🔍 Review Code",
+      "description": "Analyze for improvements, optimizations, refactoring opportunities.",
+      "content": "Study the provided code files. Review them for potential improvements and optimizations, suggest refactorings, and identify any bugs or issues. List improvements that can enhance code quality, performance, stability, accuracy, and maintainability. Clearly explain each suggestion, then apply all suggested changes.",
+      "enabled": true
+    },
+    {
+      "name": "🧠 Understand Only",
+      "description": "Explain code without making changes.",
+      "content": "Study the provided code files carefully. Analyze the architecture, design patterns, and implementation details. Explain:\n\n1. The overall purpose and functionality of the codebase\n2. How the different components interact with each other\n3. Key design decisions and their trade-offs\n4. Entry points and control flow\n5. Data structures and state management\n6. Notable algorithms or techniques used\n\nDo NOT suggest changes or modifications. Focus purely on understanding and explaining the code.",
+      "enabled": false
+    },
+    {
+      "name": "🛠️ Implement Changes",
+      "description": "Apply user-requested modifications.",
+      "content": "Study the provided code files and apply the changes requested by the user. Follow the user's instructions precisely while maintaining code quality and consistency with the existing codebase.",
+      "enabled": false
+    },
+    {
+      "name": "🐛 Bug Hunt",
+      "description": "Find bugs, security issues, edge cases.",
+      "content": "Study the provided code files with a critical eye. Search for:\n\n1. **Bugs**: Logic errors, off-by-one errors, null/undefined handling, race conditions\n2. **Security Issues**: Injection vulnerabilities, improper input validation, authentication/authorization flaws, sensitive data exposure\n3. **Edge Cases**: Boundary conditions, empty inputs, malformed data, error handling gaps\n4. **Memory Issues**: Leaks, dangling references, buffer overflows (for applicable languages)\n5. **Concurrency Issues**: Deadlocks, race conditions, improper synchronization\n\nFor each issue found, describe the problem and its potential impact, identify the exact location in the code, and provide a fix.",
+      "enabled": false
+    },
+    {
+      "name": "🧪 Add Tests",
+      "description": "Generate comprehensive test coverage.",
+      "content": "Study the provided code files and generate comprehensive tests. Include:\n\n1. **Unit Tests**: Test individual functions and methods in isolation\n2. **Integration Tests**: Test how components work together\n3. **Edge Cases**: Empty inputs, boundary values, error conditions\n4. **Mocks/Stubs**: Where appropriate for external dependencies\n\nEnsure tests are well-organized, readable, and provide good coverage of the codebase.",
+      "enabled": false
+    },
+    {
+      "name": "📝 Add Documentation",
+      "description": "Add comments, docstrings, and README updates.",
+      "content": "Study the provided code files and add comprehensive documentation:\n\n1. **Docstrings/Comments**: Document all public functions, classes, and modules\n2. **Inline Comments**: Explain complex or non-obvious logic\n3. **README Updates**: If applicable, suggest README improvements\n4. **Type Annotations**: Add or improve type hints where applicable\n\nFocus on making the code self-documenting and easy to understand for new developers.",
+      "enabled": false
+    },
+    {
+      "name": "⚡ Optimize Performance",
+      "description": "Focus specifically on performance improvements.",
+      "content": "Study the provided code files with a focus on performance optimization:\n\n1. **Algorithm Efficiency**: Identify O(n²) or worse patterns that could be improved\n2. **Memory Usage**: Find unnecessary allocations, copies, or memory bloat\n3. **I/O Optimization**: Batch operations, reduce syscalls, improve caching\n4. **Concurrency**: Identify parallelization opportunities\n5. **Hot Paths**: Focus optimization efforts on frequently executed code\n\nFor each optimization, explain the current bottleneck and the expected improvement.",
+      "enabled": false
+    }
+  ]
+}

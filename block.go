@@ -1,6 +1,8 @@
 package main
 
 import (
+	"math"
+
 	"github.com/itsubaki/autograd/function"
 	"github.com/itsubaki/autograd/layer"
 	"github.com/itsubaki/autograd/variable"
@@ -11,7 +13,8 @@ import (
 var (
 	Zeros               = variable.Zero
 	Ones                = pkg.Ones
-	ReLU                = function.ReLU
+	GELU                = pkg.GELU
+	Sigmoid             = function.Sigmoid
 	Dropout             = function.DropoutSimple
 	MatMul              = pkg.MatMul
 	Add                 = variable.Add
@@ -36,31 +39,36 @@ type Block struct {
 	norm2     *LayerNorm
 }
 
-func NewBlock(embedSize, numHeads int) *Block {
+func NewBlock(embedSize, numHeads, layerIndex int) *Block {
+	// GPT-2 style initialization scaling for residual projections.
+	// Weights are scaled by 1/sqrt(2 * N_layers) to keep variance bounded
+	// at initialization, preventing signal explosion in deep networks.
+	scale := 1.0 / math.Sqrt(2.0*float64(layers))
+
 	return &Block{
 		embedSize: embedSize,
 		headCount: numHeads,
 		saHead:    NewMultiHeadAttention(embedSize, numHeads),
 		mlp:       NewLinear(embedSize, embedSize*4),
-		mlpProj:   NewLinear(embedSize*4, embedSize),
+		mlpProj:   NewLinear(embedSize*4, embedSize, WithScale(scale)),
 		norm1:     NewLayerNorm(embedSize),
 		norm2:     NewLayerNorm(embedSize),
 	}
 }
 
 func (b *Block) Forward(input *variable.Variable) *variable.Variable {
-	// Self-attention with residual connections. Input is our highway, we allow the gradient to flow back unimpeded.
-	input = b.norm1.Forward(input)   // Normalize input (mean=0, var=1), i.e. normalize every token's embed
-	saOut := b.saHead.Forward(input) // Encode relationships between positions, (blockSize, embedSize)
-	input = Add(input, saOut)        // Add residual attention output back to main path
+	// Self-attention with residual connections.
+	input = b.norm1.Forward(input)   // Pre-Norm
+	saOut := b.saHead.Forward(input) // Encode relationships
+	input = Add(input, saOut)        // Residual
 
 	// Feed-forward network with residual connection
-	input = b.norm2.Forward(input)               // Normalize input
-	mlpExpanded := b.mlp.Forward(input)          // Expand to higher dimension
-	mlpActivated := ReLU(mlpExpanded)            // Apply activation function
+	input = b.norm2.Forward(input)               // Pre-Norm
+	mlpExpanded := b.mlp.Forward(input)          // Expand to 4x dimension
+	mlpActivated := GELU(mlpExpanded)            // GELU activation (smoother than ReLU)
 	mlpOutput := b.mlpProj.Forward(mlpActivated) // Project back to original dimension
-	mlpOutput = Dropout(dropout)(mlpOutput)      // Dropping out some neurons to prevent overfitting
-	input = Add(input, mlpOutput)                // Add feed-forward residual output to main path
+	mlpOutput = Dropout(dropout)(mlpOutput)      // Dropout for regularization
+	input = Add(input, mlpOutput)                // Residual
 
 	return input
 }

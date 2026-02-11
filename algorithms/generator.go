@@ -67,7 +67,7 @@ func GenerateTracesSummary() string {
 		}
 
 		sb.WriteString(fmt.Sprintf("%-20s %s (%s)\n", alg.ID, alg.Description, alg.Complexity))
-		sb.WriteString(fmt.Sprintf("  Example: %s → %s\n", input, result))
+		sb.WriteString(fmt.Sprintf("  Example: %s -> %s\n", input, result))
 
 		// Show first 5 trace steps
 		maxSteps := 5
@@ -82,7 +82,7 @@ func GenerateTracesSummary() string {
 		if len(trace) > maxSteps {
 			suffix = fmt.Sprintf(" ... (%d more)", len(trace)-maxSteps)
 		}
-		sb.WriteString(fmt.Sprintf("  Trace:   %s%s\n\n", strings.Join(traceStrs, " → "), suffix))
+		sb.WriteString(fmt.Sprintf("  Trace:   %s%s\n\n", strings.Join(traceStrs, " -> "), suffix))
 	}
 
 	return sb.String()

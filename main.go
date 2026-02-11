@@ -39,7 +39,7 @@ func main() {
 	chat := flag.Bool("chat", false, "Skip training and jump straight to chat")
 	traces := flag.Bool("traces", false, "Generate algorithm reasoning traces and exit")
 	traceCount := flag.Int("trace-count", 50, "Number of traces per algorithm to generate")
-	useSynthetic := flag.Bool("use-synthetic", true, "Mix synthetic algorithm traces into training data")
+	useSynthetic := flag.Bool("use-synthetic", true, "Mix natural language Q&A into training data")
 	flag.Parse()
 
 	// --- Algorithm Trace Generation Mode ---
@@ -61,23 +61,22 @@ func main() {
 	fmt.Printf("Vocabulary: %s\n", data.Chars())
 	fmt.Printf("Tokens in dataset: %.3fM\n", pkg.Millions(len(dataset)))
 
-	// --- Algorithm Vocabulary Injection ---
-	// If enabled, we generate synthetic reasoning traces (e.g. sorting steps, graph traversals)
-	// and mix them into the training data. This teaches the model the "logic language" directly.
+	// --- Algorithm Q&A Training Data ---
+	// Instead of mixing raw execution traces (full of digits and brackets that
+	// the char-level tokenizer can't represent), we generate natural language
+	// Q&A pairs that use only vocabulary-safe characters. The model learns to
+	// RECOGNIZE algorithmic problems and their solutions in natural language.
+	//
+	// Example: "Sort three, seven, one. Answer, one, three, seven."
+	//
+	// At inference time, the algorithm toolbox provides precise execution
+	// that the model itself can't compute — system-level augmentation.
 	if *useSynthetic && steps > 0 {
-		fmt.Println("Generating and mixing synthetic algorithm traces...")
-
-		// Expand vocabulary with all characters used in algorithm traces.
-		// This MUST happen before building the model (token embeddings must
-		// match vocabSize) and before encoding the synthetic text.
-		data.AddChars("0123456789[]()><=:;|{}&%+-@^.INF")
-
-		// Generate ~300 traces per algorithm (~5000 total traces).
-		// This creates a dense curriculum of logic puzzles alongside the text data.
-		syntheticText := algorithms.GenerateTraces(300)
-		syntheticTokens := data.Encode(syntheticText)
-		dataset = append(dataset, syntheticTokens...)
-		fmt.Printf("Added %.3fM synthetic reasoning tokens\n", pkg.Millions(len(syntheticTokens)))
+		fmt.Println("Generating natural language algorithm Q&A...")
+		qaText := algorithms.GenerateQA(500) // 500 Q&A pairs per type (8 types = 4000 pairs)
+		qaTokens := data.Encode(qaText)
+		dataset = append(dataset, qaTokens...)
+		fmt.Printf("Added %.3fM algorithm Q&A tokens\n", pkg.Millions(len(qaTokens)))
 		fmt.Printf("Total training tokens: %.3fM\n", pkg.Millions(len(dataset)))
 	}
 
@@ -269,7 +268,7 @@ func main() {
 				if err != nil {
 					fmt.Printf("\n  Error: %v\n", err)
 				} else {
-					fmt.Printf("\n  [%s] %s → %s\n", algID, args, result)
+					fmt.Printf("\n  [%s] %s -> %s\n", algID, args, result)
 					fmt.Printf("  Trace: %s\n", algorithms.FormatTrace(trace))
 				}
 			} else {

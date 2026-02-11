@@ -85,7 +85,7 @@ func FormatTrace(trace []Step) string {
 // in a human-readable way.
 func FormatResult(algID, args, result string, trace []Step) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("[%s] %s → %s\n", algID, args, result))
+	sb.WriteString(fmt.Sprintf("[%s] %s -> %s\n", algID, args, result))
 	sb.WriteString(fmt.Sprintf("  Trace: %s\n", FormatTrace(trace)))
 	return sb.String()
 }

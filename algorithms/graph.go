@@ -266,7 +266,7 @@ func dijkstraAlgo(args string) (string, []Step, error) {
 			if newDist < dist[v] {
 				trace = append(trace, Step{
 					Op:     "RELAX",
-					Detail: fmt.Sprintf("RELAX(%d→%d:%d<%d)", u, v, newDist, dist[v]),
+					Detail: fmt.Sprintf("RELAX(%d->%d:%d<%d)", u, v, newDist, dist[v]),
 				})
 				dist[v] = newDist
 				prev[v] = u

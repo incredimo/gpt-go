@@ -3,6 +3,7 @@ package pkg
 import (
 	"math"
 	"math/rand/v2"
+	"sort"
 
 	"github.com/itsubaki/autograd/matrix"
 	"github.com/itsubaki/autograd/variable"
@@ -55,6 +56,134 @@ func SampleTemp(probs *variable.Variable, temperature float64) float64 {
 	}
 
 	return Sample(variable.NewOf(adjustedProbs))
+}
+
+// SampleAdvanced applies top-k, top-p (nucleus), and repetition penalty
+// before temperature-scaled sampling. This dramatically improves perceived
+// generation quality without any model changes.
+//
+//   - topK: keep only the top-K highest probability tokens (0 = disabled)
+//   - topP: keep smallest set of tokens whose cumulative probability >= topP (1.0 = disabled)
+//   - context: recent token IDs for repetition penalty
+//   - repPenalty: factor to reduce probability of recent tokens (1.0 = disabled)
+func SampleAdvanced(probs *variable.Variable, temperature float64, topK int, topP float64, context []float64, repPenalty float64) float64 {
+	p := make([]float64, len(probs.Data[0]))
+	copy(p, probs.Data[0])
+
+	// 1. Repetition penalty: reduce probability of recently seen tokens.
+	if repPenalty > 1.0 && len(context) > 0 {
+		p = applyRepetitionPenalty(p, context, repPenalty)
+	}
+
+	// 2. Top-K: zero out everything outside the top-K most probable tokens.
+	if topK > 0 && topK < len(p) {
+		p = applyTopK(p, topK)
+	}
+
+	// 3. Top-P (nucleus): keep the smallest set of tokens summing to >= topP.
+	if topP > 0.0 && topP < 1.0 {
+		p = applyTopP(p, topP)
+	}
+
+	return SampleTemp(variable.NewOf(p), temperature)
+}
+
+// applyTopK keeps only the top-K highest probability tokens and zeros the rest.
+func applyTopK(probs []float64, k int) []float64 {
+	// Find the k-th largest probability
+	sorted := make([]float64, len(probs))
+	copy(sorted, probs)
+	sort.Float64s(sorted)
+	threshold := sorted[len(sorted)-k]
+
+	result := make([]float64, len(probs))
+	sum := 0.0
+	for i, p := range probs {
+		if p >= threshold {
+			result[i] = p
+			sum += p
+		}
+	}
+
+	// Renormalize
+	if sum > 0 {
+		for i := range result {
+			result[i] /= sum
+		}
+	}
+	return result
+}
+
+// applyTopP (nucleus sampling) keeps the smallest set of tokens whose
+// cumulative probability is >= p. This adapts the number of candidates
+// dynamically — confident predictions use fewer tokens, uncertain ones more.
+func applyTopP(probs []float64, p float64) []float64 {
+	type indexedProb struct {
+		index int
+		prob  float64
+	}
+
+	// Sort by probability descending
+	indexed := make([]indexedProb, len(probs))
+	for i, prob := range probs {
+		indexed[i] = indexedProb{i, prob}
+	}
+	sort.Slice(indexed, func(i, j int) bool {
+		return indexed[i].prob > indexed[j].prob
+	})
+
+	// Keep tokens until cumulative probability reaches p
+	result := make([]float64, len(probs))
+	cumulative := 0.0
+	for _, ip := range indexed {
+		result[ip.index] = ip.prob
+		cumulative += ip.prob
+		if cumulative >= p {
+			break
+		}
+	}
+
+	// Renormalize
+	sum := 0.0
+	for _, v := range result {
+		sum += v
+	}
+	if sum > 0 {
+		for i := range result {
+			result[i] /= sum
+		}
+	}
+	return result
+}
+
+// applyRepetitionPenalty reduces the probability of tokens that appear in
+// the recent context. This prevents the model from getting stuck in loops.
+func applyRepetitionPenalty(probs []float64, recentTokens []float64, penalty float64) []float64 {
+	result := make([]float64, len(probs))
+	copy(result, probs)
+
+	// Build set of recently seen token IDs
+	seen := make(map[int]bool)
+	for _, tok := range recentTokens {
+		seen[int(tok)] = true
+	}
+
+	// Reduce probability of seen tokens
+	sum := 0.0
+	for i := range result {
+		if seen[i] {
+			result[i] /= penalty
+		}
+		sum += result[i]
+	}
+
+	// Renormalize
+	if sum > 0 {
+		for i := range result {
+			result[i] /= sum
+		}
+	}
+	return result
 }
 
 // Returns rows at specified indexes. Negative indexes return rows from the end.

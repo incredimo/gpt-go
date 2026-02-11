@@ -27,9 +27,10 @@ const (
 	maxTokens        = 50    // tokens limit for generation
 	warmupSteps      = 1000  // steps to warm up learning rate
 	gradClip         = 1.0   // maximum gradient norm
-	maxThoughts      = 8     // maximum number of internal reasoning loops per token
-	haltThreshold    = 0.5   // halt probability threshold for inference exit
-	ponderCost       = 0.01  // penalty for thinking too long (encourages efficiency)
+	thoughtSteps     = 3     // fixed recurrence: repeat block stack K times for deeper reasoning
+	topK             = 40    // top-k sampling: keep only top-K candidates (0 = disabled)
+	topP             = 0.9   // top-p (nucleus) sampling: keep smallest set summing to >= p
+	repPenalty       = 1.1   // repetition penalty: reduce probability of recent tokens
 )
 
 func main() {
@@ -56,9 +57,6 @@ func main() {
 	}
 	norm := NewLayerNorm(embedSize)
 
-	// The Exit Gate: Determines if the thought is mature enough to be spoken.
-	exitGate := NewExitGate(embedSize)
-
 	// Weight Tying: We reuse the token embedding matrix for the final linear layer.
 	// This creates a shared latent space for inputs and outputs, significantly
 	// reducing the parameter count while improving semantic understanding.
@@ -72,17 +70,32 @@ func main() {
 		params.Add(block.Params()...)
 	}
 	params.Add(norm.Params()...)
-	params.Add(exitGate.Params()...)
-	params.Add(lmHeadBias) // Only bias; weights are shared with tokEmbeds
+	params.Add(lmHeadBias)
 	params.TryLoadPretrained()
 	fmt.Printf("Model size: %.3fM\n", pkg.Millions(params.Count()))
 
+	// --- Weight Decay Filtering ---
+	// LayerNorm scale/shift, all biases, and embeddings should NOT be
+	// weight-decayed. Decaying these hurts training stability.
+	noDecay := make(map[*variable.Variable]bool)
+	noDecay[tokEmbeds] = true
+	noDecay[posEmbeds] = true
+	noDecay[lmHeadBias] = true
+	noDecay[norm.Scale] = true
+	noDecay[norm.Shift] = true
+	for _, block := range blocks {
+		for _, p := range block.NoDecayParams() {
+			noDecay[p] = true
+		}
+	}
+
 	// Training loop.
 	losses := 0.0
-	// Initialize AdamW with 0 learning rate; the scheduler will set it each step.
+	gradNorms := 0.0
 	optimizer := pkg.NewAdamW(0)
-	fmt.Printf("bs=%d, es=%d, vs=%d, steps=%d, thoughts=%d\n", blockSize, embedSize, vocabSize, steps, maxThoughts)
+	optimizer.NoDecay = noDecay
 
+	fmt.Printf("bs=%d, es=%d, vs=%d, steps=%d, thoughts=%d\n", blockSize, embedSize, vocabSize, steps, thoughtSteps)
 	for i := 0; i < steps; i++ {
 		// --- Cosine Learning Rate Scheduler with Warmup ---
 		// Warmup: linear ramp from 0 to learningRate.
@@ -100,72 +113,47 @@ func main() {
 		// Targets contain the ground truth next token for each input token.
 		input, targets := data.Sample(dataset, blockSize)
 
-		// --- Forward Pass with Latent Reasoning (Pondering Loop) ---
+		// --- Forward Pass with Fixed Recurrence ---
+		// Instead of one pass through the blocks, we repeat the block stack
+		// K times. This provides deeper "thinking" without the instability
+		// of adaptive halting. Same weights applied multiple times = parameter efficient.
 		embeds := Rows(tokEmbeds, Flat(input)...)
 		embeds = Add(embeds, posEmbeds)
 
-		// The "Thinking" Process: instead of one pass, loop up to maxThoughts.
-		// This allows the model to refine its understanding iteratively in
-		// high-dimensional vector space before collapsing to a word.
 		state := embeds
-		var totalLoss *variable.Variable
-		remainProb := variable.New(1.0) // Probability of not having exited yet
-
-		for t := 0; t < maxThoughts; t++ {
-			// One step of thinking: pass through all transformer blocks.
+		for t := 0; t < thoughtSteps; t++ {
 			for _, block := range blocks {
 				state = block.Forward(state)
 			}
-
-			// Introspection: "Am I confident enough to speak?"
-			// Exit gate returns (blockSize, 1) halt probabilities.
-			haltPerToken := exitGate.Forward(state)
-
-			// Average halt probability across all token positions → scalar.
-			haltScalar := Mean(Transpose(haltPerToken))
-
-			// Effective exit probability = P(halt now) * P(haven't exited yet)
-			exitProb := Mul(haltScalar, remainProb)
-
-			// Compute what the output WOULD be if we stopped thinking now.
-			normState := norm.Forward(state)
-			logits := MatMul(normState, Transpose(tokEmbeds)) // Weight tying
-			logits = Add(logits, lmHeadBias)
-			stepLoss := SoftmaxCrossEntropy(logits, targets)
-
-			// Weight this step's loss by how likely we are to exit here.
-			weightedLoss := Mul(stepLoss, exitProb)
-			if totalLoss == nil {
-				totalLoss = weightedLoss
-			} else {
-				totalLoss = Add(totalLoss, weightedLoss)
-			}
-
-			// Update remaining probability: P(still thinking) *= (1 - P(halt))
-			remainProb = Mul(variable.SubC(1.0, haltScalar), remainProb)
 		}
 
-		// Ponder cost: penalize the model slightly for using many steps.
-		// This encourages efficiency — don't loop forever unnecessarily.
-		ponderPenalty := MulC(ponderCost, variable.SubC(1.0, remainProb))
-		loss := Add(totalLoss, ponderPenalty)
+		state = norm.Forward(state)
+
+		// Weight-tied output projection: state @ tokEmbeds.T + bias
+		logits := MatMul(state, Transpose(tokEmbeds))
+		logits = Add(logits, lmHeadBias)
+
+		// --- Loss & Backprop ---
+		loss := SoftmaxCrossEntropy(logits, targets)
 		losses += Val(loss)
 
-		// --- Backward Pass ---
 		loss.Backward()
 
 		// Gradient Clipping to prevent explosion.
-		pkg.ClipGradNorm(params, gradClip)
+		gradNorm := pkg.ClipGradNorm(params, gradClip)
+		gradNorms += gradNorm
 
 		// Nudge parameters to minimize the loss.
 		optimizer.Update(params)
 		params.ZeroGrad()
 
-		// Logging
+		// Logging with grad norm for monitoring training health.
 		if i%evalSteps == 0 {
 			avgLoss := losses / float64(min(i+1, evalSteps))
-			fmt.Printf("\rstep: %5d, loss: %.4f, lr: %.6f\n", i, avgLoss, lr)
+			avgGrad := gradNorms / float64(min(i+1, evalSteps))
+			fmt.Printf("\rstep: %5d, loss: %.4f, lr: %.6f, grad: %.4f\n", i, avgLoss, lr, avgGrad)
 			losses = 0
+			gradNorms = 0
 		} else if i%100 == 0 {
 			fmt.Printf("\r%s", strings.Repeat("·", (i%evalSteps)*26/evalSteps))
 		}
@@ -174,9 +162,7 @@ func main() {
 	pkg.DisableDropout()
 	// Training is done.
 
-	// --- Inference with Latent Reasoning ---
-	// The model thinks in vector space (loops through blocks) until the
-	// exit gate signals confidence, then collapses the thought to a token.
+	// --- Inference with Fixed Recurrence ---
 	nextTok := func(context []float64) float64 {
 		context = context[max(0, len(context)-blockSize):]
 
@@ -184,30 +170,26 @@ func main() {
 		posEmbedsSlice := Rows(posEmbeds, seqIndices(len(context))...)
 		embeds = Add(embeds, posEmbedsSlice)
 
-		// Pondering loop: think until confident or max steps reached.
+		// Fixed recurrence: think thoughtSteps times.
 		state := embeds
-		for t := 0; t < maxThoughts; t++ {
+		for t := 0; t < thoughtSteps; t++ {
 			for _, block := range blocks {
 				state = block.Forward(state)
 			}
-
-			// Check if the model is confident enough to speak.
-			haltPerToken := exitGate.Forward(state)
-			meanHalt := meanValue(haltPerToken)
-			if meanHalt > haltThreshold {
-				break // Thought is mature, speak.
-			}
 		}
 
-		// Collapse thought to token using weight-tied output.
 		state = norm.Forward(state)
+
+		// Weight-tied output projection.
 		logits := MatMul(state, Transpose(tokEmbeds))
 		logits = Add(logits, lmHeadBias)
 
 		// We only care about the next token prediction from the last position.
 		logitsForNextToken := Rows(logits, -1)
 		probs := Softmax(logitsForNextToken)
-		tok := pkg.SampleTemp(probs, 0.8)
+
+		// Advanced sampling: top-k + top-p + repetition penalty.
+		tok := pkg.SampleAdvanced(probs, 0.8, topK, topP, context, repPenalty)
 
 		return tok
 	}
@@ -241,21 +223,4 @@ func seqIndices(n int) []float64 {
 		indices[i] = float64(i)
 	}
 	return indices
-}
-
-// meanValue computes the arithmetic mean of all elements in a variable.
-// Used during inference to get a single scalar halt probability.
-func meanValue(x *variable.Variable) float64 {
-	sum := 0.0
-	count := 0
-	for _, row := range x.Data {
-		for _, v := range row {
-			sum += v
-			count++
-		}
-	}
-	if count == 0 {
-		return 0
-	}
-	return sum / float64(count)
 }

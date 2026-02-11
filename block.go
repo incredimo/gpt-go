@@ -41,14 +41,14 @@ type Block struct {
 
 func NewBlock(embedSize, numHeads, layerIndex int) *Block {
 	// GPT-2 style initialization scaling for residual projections.
-	// Weights are scaled by 1/sqrt(2 * N_layers) to keep variance bounded
-	// at initialization, preventing signal explosion in deep networks.
+	// Both the attention output projection AND the MLP projection are
+	// residual branches and must be scaled by 1/sqrt(2 * N_layers).
 	scale := 1.0 / math.Sqrt(2.0*float64(layers))
 
 	return &Block{
 		embedSize: embedSize,
 		headCount: numHeads,
-		saHead:    NewMultiHeadAttention(embedSize, numHeads),
+		saHead:    NewMultiHeadAttention(embedSize, numHeads, scale),
 		mlp:       NewLinear(embedSize, embedSize*4),
 		mlpProj:   NewLinear(embedSize*4, embedSize, WithScale(scale)),
 		norm1:     NewLayerNorm(embedSize),
@@ -56,21 +56,26 @@ func NewBlock(embedSize, numHeads, layerIndex int) *Block {
 	}
 }
 
-func (b *Block) Forward(input *variable.Variable) *variable.Variable {
-	// Self-attention with residual connections.
-	input = b.norm1.Forward(input)   // Pre-Norm
-	saOut := b.saHead.Forward(input) // Encode relationships
-	input = Add(input, saOut)        // Residual
+func (b *Block) Forward(x *variable.Variable) *variable.Variable {
+	// Self-attention with Pre-Norm residual.
+	// CRITICAL: residual adds to the ORIGINAL x, NOT the normalized version.
+	// If you add to LN(x), you're training a different architecture.
+	resid := x
+	xn := b.norm1.Forward(x)
+	saOut := b.saHead.Forward(xn)
+	saOut = Dropout(dropout)(saOut) // Residual dropout for attention branch
+	x = Add(resid, saOut)
 
-	// Feed-forward network with residual connection
-	input = b.norm2.Forward(input)               // Pre-Norm
-	mlpExpanded := b.mlp.Forward(input)          // Expand to 4x dimension
-	mlpActivated := GELU(mlpExpanded)            // GELU activation (smoother than ReLU)
-	mlpOutput := b.mlpProj.Forward(mlpActivated) // Project back to original dimension
-	mlpOutput = Dropout(dropout)(mlpOutput)      // Dropout for regularization
-	input = Add(input, mlpOutput)                // Residual
+	// Feed-forward network with Pre-Norm residual.
+	resid = x
+	xn = b.norm2.Forward(x)
+	mlp := b.mlp.Forward(xn)
+	mlp = GELU(mlp)
+	mlp = b.mlpProj.Forward(mlp)
+	mlp = Dropout(dropout)(mlp) // Residual dropout for MLP branch
+	x = Add(resid, mlp)
 
-	return input
+	return x
 }
 
 func (b *Block) Params() []layer.Parameter {
@@ -83,5 +88,24 @@ func (b *Block) Params() []layer.Parameter {
 	params = append(params, b.norm1.Scale, b.norm1.Shift)
 	params = append(params, b.norm2.Scale, b.norm2.Shift)
 
+	return params
+}
+
+// NoDecayParams returns parameters that should NOT be weight-decayed:
+// LayerNorm scale/shift and all biases. Decaying these hurts training.
+func (b *Block) NoDecayParams() []*variable.Variable {
+	params := []*variable.Variable{
+		b.norm1.Scale, b.norm1.Shift,
+		b.norm2.Scale, b.norm2.Shift,
+	}
+	if b.mlp.Bias != nil {
+		params = append(params, b.mlp.Bias)
+	}
+	if b.mlpProj.Bias != nil {
+		params = append(params, b.mlpProj.Bias)
+	}
+	if b.saHead.proj.Bias != nil {
+		params = append(params, b.saHead.proj.Bias)
+	}
 	return params
 }

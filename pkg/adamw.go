@@ -16,6 +16,10 @@ type AdamW struct {
 	Hook        []optimizer.Hook
 	iter        int
 	ms, vs      map[*variable.Variable]matrix.Matrix
+	// NoDecay contains parameters that should NOT be weight-decayed.
+	// LayerNorm scale/shift, all biases, and embeddings should be excluded
+	// from weight decay — decaying them hurts training.
+	NoDecay map[*variable.Variable]bool
 }
 
 func NewAdamW(learningRate float64) AdamW {
@@ -51,19 +55,17 @@ func (o *AdamW) Update(model optimizer.Model) {
 			return v + ((1 - o.Beta2) * (grad*grad - v))
 		})
 
-		// The key difference for AdamW: apply weight decay directly to the weights
-		// instead of incorporating it into the gradient
-
-		// First compute the standard Adam update
+		// Standard Adam update
 		adamUpdate := matrix.F2(o.ms[p], o.vs[p], func(m, v float64) float64 {
 			return lr * m / (math.Sqrt(v) + 1e-8)
 		})
 
-		// Then apply weight decay separately
-		weightDecayUpdate := matrix.MulC(lr*o.WeightDecay, p.Data)
-
-		// Update parameters: param = param - adamUpdate - weightDecayUpdate
+		// Apply weight decay ONLY to parameters not in the NoDecay set.
+		// LayerNorm params, biases, and embeddings should never be decayed.
 		p.Data = matrix.Sub(p.Data, adamUpdate)
-		p.Data = matrix.Sub(p.Data, weightDecayUpdate)
+		if !o.NoDecay[p] {
+			weightDecayUpdate := matrix.MulC(lr*o.WeightDecay, p.Data)
+			p.Data = matrix.Sub(p.Data, weightDecayUpdate)
+		}
 	}
 }

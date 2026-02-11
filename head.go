@@ -22,7 +22,10 @@ type MultiHeadAttention struct {
 	proj      *Linear
 }
 
-func NewMultiHeadAttention(embedSize, numHeads int) *MultiHeadAttention {
+// NewMultiHeadAttention creates a multi-head attention module.
+// projScale applies initialization scaling to the output projection
+// (residual branch), matching GPT-2's 1/sqrt(2*layers) formula.
+func NewMultiHeadAttention(embedSize, numHeads int, projScale float64) *MultiHeadAttention {
 	heads := make([]*Head, numHeads)
 	headSize := embedSize / numHeads
 	for i := range heads {
@@ -34,7 +37,7 @@ func NewMultiHeadAttention(embedSize, numHeads int) *MultiHeadAttention {
 		numHeads:  numHeads,
 		embedSize: embedSize,
 		headSize:  headSize,
-		proj:      NewLinear(embedSize, embedSize),
+		proj:      NewLinear(embedSize, embedSize, WithScale(projScale)),
 	}
 }
 
@@ -45,8 +48,9 @@ func (mh *MultiHeadAttention) Forward(input *variable.Variable) *variable.Variab
 	}
 
 	out := pkg.Cat(features...)
-	out = mh.proj.Forward(out)  // Project back to (embedSize, embedSize)
-	out = Dropout(dropout)(out) // Dropping out some neurons to prevent overfitting
+	out = mh.proj.Forward(out) // Project back to (embedSize, embedSize)
+	// Dropout for the residual path is applied in Block.Forward,
+	// keeping both residual dropouts in one place for clarity.
 
 	return out
 }
@@ -87,7 +91,7 @@ func (h *Head) Forward(input *variable.Variable) *variable.Variable {
 	tril := Tril(Ones(T, T))
 	attentions = MaskedInfFill(attentions, tril)
 	attentions = Softmax(attentions)
-	attentions = Dropout(dropout)(attentions)
+	attentions = Dropout(dropout)(attentions) // Attention dropout (on weights, not residual)
 
 	v := h.Value.Forward(input)
 	weightedSum := MatMul(attentions, v)

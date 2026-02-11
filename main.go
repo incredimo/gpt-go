@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/itsubaki/autograd/variable"
+	"github.com/zakirullin/gpt-go/algorithms"
 	"github.com/zakirullin/gpt-go/data"
 	"github.com/zakirullin/gpt-go/pkg"
 )
@@ -36,7 +37,18 @@ const (
 func main() {
 	steps := steps
 	chat := flag.Bool("chat", false, "Skip training and jump straight to chat")
+	traces := flag.Bool("traces", false, "Generate algorithm reasoning traces and exit")
+	traceCount := flag.Int("trace-count", 50, "Number of traces per algorithm to generate")
 	flag.Parse()
+
+	// --- Algorithm Trace Generation Mode ---
+	if *traces {
+		fmt.Println(algorithms.GenerateTracesSummary())
+		fmt.Print("\n=== Generating Training Traces ===\n\n")
+		fmt.Println(algorithms.GenerateTraces(*traceCount))
+		return
+	}
+
 	if *chat {
 		steps = -1
 	}
@@ -194,7 +206,8 @@ func main() {
 		return tok
 	}
 
-	// Chat loop.
+	// Chat loop with algorithm tool support.
+	fmt.Println("\n--- Chat (type /algo to invoke algorithms, /list for catalog, 'exit' to quit) ---")
 	prompt := " mysterious island"
 	for {
 		fmt.Printf("\n%s", prompt)
@@ -209,9 +222,62 @@ func main() {
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Scan()
 		prompt = scanner.Text()
-		if prompt == "exit" {
+
+		switch {
+		case prompt == "exit":
 			fmt.Println("Bye!")
-			break
+			return
+
+		case prompt == "/list":
+			fmt.Println(algorithms.ListAlgorithms())
+			fmt.Print("$ ")
+			scanner.Scan()
+			prompt = scanner.Text()
+
+		case strings.HasPrefix(prompt, "/algo "):
+			// Parse /algo command: /algo sort.bubble 5,2,9,1
+			parts := strings.SplitN(strings.TrimPrefix(prompt, "/algo "), " ", 2)
+			if len(parts) == 2 {
+				algID := strings.TrimSpace(parts[0])
+				args := strings.TrimSpace(parts[1])
+				result, trace, err := algorithms.Execute(algID, args)
+				if err != nil {
+					fmt.Printf("\n  Error: %v\n", err)
+				} else {
+					fmt.Printf("\n  [%s] %s → %s\n", algID, args, result)
+					fmt.Printf("  Trace: %s\n", algorithms.FormatTrace(trace))
+				}
+			} else {
+				fmt.Println("\n  Usage: /algo <algorithm_id> <args>")
+				fmt.Println("  Example: /algo sort.bubble 5,2,9,1")
+			}
+			fmt.Print("$ ")
+			scanner.Scan()
+			prompt = scanner.Text()
+
+		case strings.HasPrefix(prompt, "/trace "):
+			// Generate traces for a specific algorithm
+			parts := strings.SplitN(strings.TrimPrefix(prompt, "/trace "), " ", 2)
+			algID := strings.TrimSpace(parts[0])
+			alg, exists := algorithms.Catalog[algID]
+			if !exists {
+				fmt.Printf("\n  Unknown algorithm: %s\n", algID)
+			} else {
+				count := 5
+				fmt.Printf("\n  Generating %d traces for %s:\n", count, algID)
+				for i := 0; i < count; i++ {
+					input := alg.RandInput()
+					result, trace, err := alg.Run(input)
+					if err != nil {
+						continue
+					}
+					fmt.Printf("  [%d] IN: %s | %s | OUT: %s\n",
+						i+1, input, algorithms.FormatTrace(trace), result)
+				}
+			}
+			fmt.Print("$ ")
+			scanner.Scan()
+			prompt = scanner.Text()
 		}
 	}
 }

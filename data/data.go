@@ -40,12 +40,23 @@ func Tokenize(numMerges int) ([]float64, int) {
 	return Encode(normDataset), VocabSize()
 }
 
+// AddChars expands the vocabulary with additional characters.
+// Must be called after Tokenize() and before Encode() on text
+// that contains characters not in the original dataset.
+// This is used to add digits, brackets, and other chars needed
+// by algorithm reasoning traces.
+func AddChars(chars string) {
+	for _, ch := range chars {
+		addTokensToVocab(string(ch))
+	}
+}
+
 func Encode(s string) []float64 {
 	var tokens []float64
 	for _, ch := range s {
 		tok, ok := tokenToID[string(ch)]
 		if !ok {
-			panic(fmt.Sprintf("char '%s' is missing from vocabulary", string(ch)))
+			panic(fmt.Sprintf("char '%s' is missing from vocabulary — call data.AddChars() first", string(ch)))
 		}
 		tokens = append(tokens, float64(tok))
 	}

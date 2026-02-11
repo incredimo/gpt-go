@@ -39,6 +39,7 @@ func main() {
 	chat := flag.Bool("chat", false, "Skip training and jump straight to chat")
 	traces := flag.Bool("traces", false, "Generate algorithm reasoning traces and exit")
 	traceCount := flag.Int("trace-count", 50, "Number of traces per algorithm to generate")
+	useSynthetic := flag.Bool("use-synthetic", true, "Mix synthetic algorithm traces into training data")
 	flag.Parse()
 
 	// --- Algorithm Trace Generation Mode ---
@@ -55,10 +56,34 @@ func main() {
 
 	// Loading dataset and building vocabulary.
 	fmt.Println("Tokenizing dataset...")
-	dataset, vocabSize := data.Tokenize(pretrainedTokens)
+	dataset, _ := data.Tokenize(pretrainedTokens)
 	fmt.Printf("First characters:\n%s\n", strings.TrimSpace(data.Decode(dataset[:45]...)))
 	fmt.Printf("Vocabulary: %s\n", data.Chars())
 	fmt.Printf("Tokens in dataset: %.3fM\n", pkg.Millions(len(dataset)))
+
+	// --- Algorithm Vocabulary Injection ---
+	// If enabled, we generate synthetic reasoning traces (e.g. sorting steps, graph traversals)
+	// and mix them into the training data. This teaches the model the "logic language" directly.
+	if *useSynthetic && steps > 0 {
+		fmt.Println("Generating and mixing synthetic algorithm traces...")
+
+		// Expand vocabulary with all characters used in algorithm traces.
+		// This MUST happen before building the model (token embeddings must
+		// match vocabSize) and before encoding the synthetic text.
+		data.AddChars("0123456789[]()><=:;|{}&%+-@^.INF")
+
+		// Generate ~300 traces per algorithm (~5000 total traces).
+		// This creates a dense curriculum of logic puzzles alongside the text data.
+		syntheticText := algorithms.GenerateTraces(300)
+		syntheticTokens := data.Encode(syntheticText)
+		dataset = append(dataset, syntheticTokens...)
+		fmt.Printf("Added %.3fM synthetic reasoning tokens\n", pkg.Millions(len(syntheticTokens)))
+		fmt.Printf("Total training tokens: %.3fM\n", pkg.Millions(len(dataset)))
+	}
+
+	// Query vocabSize AFTER potential vocabulary expansion so embeddings
+	// have the correct dimension for all characters in the training data.
+	vocabSize := data.VocabSize()
 
 	// --- Model Architecture ---
 	tokEmbeds := RandEmbeds(vocabSize, embedSize)
